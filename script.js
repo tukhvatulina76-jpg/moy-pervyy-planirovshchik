@@ -694,6 +694,7 @@
   let toastTimer = null;
   let filters = { type: "all", priority: "all", state: "all" };
   let importedPlannerData = null;
+  let observedTodayKey = null;
 
   function createElement(tagName, className, text) {
     const element = document.createElement(tagName);
@@ -740,6 +741,23 @@
     } catch {
       showToast("Не удалось сохранить изменения в браузере.");
       return false;
+    }
+  }
+
+  function refreshForNewCalendarDay() {
+    const todayKey = getTodayKey();
+    if (!plannerData || todayKey === observedTodayKey) {
+      return;
+    }
+    observedTodayKey = todayKey;
+    const movedOverdueTasks = rollOverOverdueTasks(plannerData.tasks, dateForToday());
+    selectedWeekStart = getWeekStart(dateForToday());
+    if (movedOverdueTasks > 0 && !persist()) {
+      return;
+    }
+    renderPlanner();
+    if (movedOverdueTasks > 0) {
+      showToast("Перенесено просроченных задач: " + movedOverdueTasks + ".");
     }
   }
 
@@ -1847,6 +1865,14 @@
         event.returnValue = "";
       }
     });
+
+    window.addEventListener("focus", refreshForNewCalendarDay);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) {
+        refreshForNewCalendarDay();
+      }
+    });
+    window.setInterval(refreshForNewCalendarDay, 60 * 1000);
   }
 
   function initializePage() {
@@ -1878,6 +1904,7 @@
     if (movedOverdueTasks > 0) {
       persist();
     }
+    observedTodayKey = getTodayKey();
     selectedWeekStart = getWeekStart(dateForToday());
     applyTheme();
     initializeEventHandlers();
