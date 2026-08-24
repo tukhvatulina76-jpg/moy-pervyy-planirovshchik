@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = "financeTaskPlanner.v1";
   const STORAGE_VERSION = 1;
+  const REFERENCE_SEED_VERSION = 2;
   const WORKDAY_NUMBERS = new Set([1, 2, 3, 4, 5, 6]);
   const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
   const TASK_TYPES = new Set(["current", "strategic"]);
@@ -21,6 +22,7 @@
         completedCollapsed: false,
         weeklyNotes: {},
         referenceSeeded: false,
+        referenceSeedVersion: 0,
       },
     };
   }
@@ -306,6 +308,11 @@
         completedCollapsed: Boolean(data.settings.completedCollapsed),
         weeklyNotes: normalizeWeeklyNotes(data.settings.weeklyNotes),
         referenceSeeded: Boolean(data.settings.referenceSeeded),
+        referenceSeedVersion:
+          Number.isInteger(data.settings.referenceSeedVersion) &&
+          data.settings.referenceSeedVersion >= 0
+            ? data.settings.referenceSeedVersion
+            : 0,
       },
     };
   }
@@ -485,18 +492,19 @@
       const type = group[0];
       group.slice(1).forEach(function (dayTasks, dayOffset) {
         dayTasks.forEach(function (definition, taskOffset) {
+          const dateKey = toDateKey(addCalendarDays(weekStart, dayOffset));
           const result = createTask(
             {
               title: definition[0],
               type,
-              date: toDateKey(addCalendarDays(weekStart, dayOffset)),
+              date: dateKey,
               startTime: times[taskOffset],
               durationMinutes: null,
               priority: definition[1],
               description: "",
               documentUrl: "",
             },
-            createdAt
+            parseDateKey(dateKey)
           );
           if (result.task) {
             data.tasks.push(result.task);
@@ -505,7 +513,58 @@
       });
     });
     data.settings.referenceSeeded = true;
+    data.settings.referenceSeedVersion = REFERENCE_SEED_VERSION;
     return data;
+  }
+
+  function restoreMissingMondayReferenceTasks(data, now) {
+    if (
+      !data.settings.referenceSeeded ||
+      data.settings.referenceSeedVersion >= REFERENCE_SEED_VERSION
+    ) {
+      return { added: 0, changed: false };
+    }
+
+    const referenceTasks = [
+      ["strategic", "Анализ исполнения бюджета за месяц", "medium", "09:00"],
+      ["strategic", "Подготовка отчёта для руководства", "medium", "10:30"],
+      ["strategic", "Оценка ключевых финансовых показателей", "medium", "13:00"],
+      ["current", "Обработка входящих платежей", "medium", "09:00"],
+      ["current", "Сверка с банками", "medium", "10:30"],
+      ["current", "Контроль дебиторской задолженности", "medium", "13:00"],
+      ["current", "Обработка заявок на оплату", "medium", "15:00"],
+    ];
+    const titleSet = new Set(referenceTasks.map(function (task) { return task[1]; }));
+    const hasMondayReferenceTask = data.tasks.some(function (task) {
+      return titleSet.has(task.title);
+    });
+    data.settings.referenceSeedVersion = REFERENCE_SEED_VERSION;
+    if (hasMondayReferenceTask) {
+      return { added: 0, changed: true };
+    }
+
+    const monday = toDateKey(getWeekStart(now));
+    let added = 0;
+    referenceTasks.forEach(function (definition) {
+      const result = createTask(
+        {
+          title: definition[1],
+          type: definition[0],
+          date: monday,
+          startTime: definition[3],
+          durationMinutes: null,
+          priority: definition[2],
+          description: "",
+          documentUrl: "",
+        },
+        parseDateKey(monday)
+      );
+      if (result.task) {
+        data.tasks.push(result.task);
+        added += 1;
+      }
+    });
+    return { added, changed: true };
   }
 
   function createRecurringTasks(input, recurrenceInput, now) {
@@ -641,6 +700,7 @@
     savePlannerData,
     createTask,
     createReferencePlannerData,
+    restoreMissingMondayReferenceTasks,
     createRecurringTasks,
     rollOverOverdueTasks,
     removeFutureRecurringTasks,
@@ -1900,8 +1960,9 @@
       appRoot.append(card);
       return;
     }
+    const referenceRecovery = restoreMissingMondayReferenceTasks(plannerData, dateForToday());
     const movedOverdueTasks = rollOverOverdueTasks(plannerData.tasks, dateForToday());
-    if (movedOverdueTasks > 0) {
+    if (referenceRecovery.changed || movedOverdueTasks > 0) {
       persist();
     }
     observedTodayKey = getTodayKey();
