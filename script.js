@@ -4,6 +4,7 @@
   const STORAGE_KEY = "financeTaskPlanner.v1";
   const STORAGE_VERSION = 1;
   const REFERENCE_SEED_VERSION = 2;
+  const OVERDUE_HANDLING_VERSION = 2;
   const WORKDAY_NUMBERS = new Set([1, 2, 3, 4, 5, 6]);
   const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
   const TASK_TYPES = new Set(["current", "strategic"]);
@@ -23,6 +24,7 @@
         weeklyNotes: {},
         referenceSeeded: false,
         referenceSeedVersion: 0,
+        overdueHandlingVersion: OVERDUE_HANDLING_VERSION,
       },
     };
   }
@@ -312,6 +314,11 @@
           Number.isInteger(data.settings.referenceSeedVersion) &&
           data.settings.referenceSeedVersion >= 0
             ? data.settings.referenceSeedVersion
+            : 0,
+        overdueHandlingVersion:
+          Number.isInteger(data.settings.overdueHandlingVersion) &&
+          data.settings.overdueHandlingVersion >= 0
+            ? data.settings.overdueHandlingVersion
             : 0,
       },
     };
@@ -656,6 +663,43 @@
     return { marked, moved };
   }
 
+  function restoreLegacyMovedCurrentWeekTasks(tasks, now) {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const currentWeekStart = getWeekStart(today);
+    const legacyTargetDate = toDateKey(getNextWorkday(today));
+    let restored = 0;
+
+    tasks.forEach(function (task) {
+      const originalDate = parseDateKey(task.overdueFromDate);
+      if (
+        task.state !== "pending" ||
+        !task.isOverdue ||
+        !originalDate ||
+        task.date !== legacyTargetDate ||
+        originalDate.getTime() < currentWeekStart.getTime() ||
+        originalDate.getTime() >= today.getTime()
+      ) {
+        return;
+      }
+
+      task.date = task.overdueFromDate;
+      task.updatedAt = now.toISOString();
+      restored += 1;
+    });
+
+    return restored;
+  }
+
+  function applyOverdueHandlingMigration(data, now) {
+    if (data.settings.overdueHandlingVersion >= OVERDUE_HANDLING_VERSION) {
+      return { changed: false, restored: 0 };
+    }
+
+    const restored = restoreLegacyMovedCurrentWeekTasks(data.tasks, now);
+    data.settings.overdueHandlingVersion = OVERDUE_HANDLING_VERSION;
+    return { changed: true, restored };
+  }
+
   function rollOverOverdueTasks(tasks, now) {
     return processOverdueTasks(tasks, now).moved;
   }
@@ -727,6 +771,8 @@
     restoreMissingMondayReferenceTasks,
     createRecurringTasks,
     processOverdueTasks,
+    restoreLegacyMovedCurrentWeekTasks,
+    applyOverdueHandlingMigration,
     rollOverOverdueTasks,
     removeFutureRecurringTasks,
     sortTasks,
@@ -931,6 +977,10 @@
 
         const previousData = plannerData;
         plannerData = importedPlannerData;
+        const migrationResult = applyOverdueHandlingMigration(
+          plannerData,
+          dateForToday()
+        );
         const overdueResult = processOverdueTasks(plannerData.tasks, dateForToday());
         if (!persist()) {
           plannerData = previousData;
@@ -946,7 +996,9 @@
         closeDialog(confirmDialog);
         renderPlanner();
         showToast(
-          overdueResult.moved > 0
+          migrationResult.restored > 0
+            ? "Импорт завершён. Возвращено в исходные дни задач: " + migrationResult.restored + "."
+            : overdueResult.moved > 0
             ? "Импорт завершён. Перенесено на новую неделю просроченных задач: " + overdueResult.moved + "."
             : overdueResult.marked > 0
               ? "Импорт завершён. Отмечено просроченных задач: " + overdueResult.marked + "."
@@ -1989,9 +2041,11 @@
       appRoot.append(card);
       return;
     }
+    const migrationResult = applyOverdueHandlingMigration(plannerData, dateForToday());
     const referenceRecovery = restoreMissingMondayReferenceTasks(plannerData, dateForToday());
     const overdueResult = processOverdueTasks(plannerData.tasks, dateForToday());
     if (
+      migrationResult.changed ||
       referenceRecovery.changed ||
       overdueResult.marked > 0 ||
       overdueResult.moved > 0
@@ -2003,7 +2057,11 @@
     applyTheme();
     initializeEventHandlers();
     renderPlanner();
-    if (overdueResult.moved > 0) {
+    if (migrationResult.restored > 0) {
+      showToast(
+        "Возвращено в исходные дни задач: " + migrationResult.restored + "."
+      );
+    } else if (overdueResult.moved > 0) {
       showToast(
         "Перенесено на новую неделю просроченных задач: " + overdueResult.moved + "."
       );
