@@ -613,27 +613,51 @@
     };
   }
 
-  function rollOverOverdueTasks(tasks, now) {
+  function processOverdueTasks(tasks, now) {
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const targetDate = toDateKey(getNextWorkday(today));
+    const currentWeekStart = getWeekStart(today);
+    let marked = 0;
     let moved = 0;
 
     tasks.forEach(function (task) {
       const taskDate = parseDateKey(task.date);
       if (
-        task.state === "pending" &&
-        taskDate &&
-        taskDate.getTime() < today.getTime()
+        task.state !== "pending" ||
+        !taskDate ||
+        taskDate.getTime() >= today.getTime()
       ) {
-        task.overdueFromDate = task.overdueFromDate || task.date;
-        task.date = targetDate;
-        task.isOverdue = true;
-        task.updatedAt = now.toISOString();
+        return;
+      }
+
+      const originalDate = task.date;
+      let changed = false;
+
+      if (taskDate.getTime() < currentWeekStart.getTime()) {
+        const weekdayOffset = taskDate.getDay() - 1;
+        task.date = toDateKey(addCalendarDays(currentWeekStart, weekdayOffset));
         moved += 1;
+        changed = true;
+      }
+
+      if (!task.isOverdue) {
+        task.isOverdue = true;
+        marked += 1;
+        changed = true;
+      }
+      if (!task.overdueFromDate) {
+        task.overdueFromDate = originalDate;
+        changed = true;
+      }
+      if (changed) {
+        task.updatedAt = now.toISOString();
       }
     });
 
-    return moved;
+    return { marked, moved };
+  }
+
+  function rollOverOverdueTasks(tasks, now) {
+    return processOverdueTasks(tasks, now).moved;
   }
 
   function removeFutureRecurringTasks(tasks, sourceTask) {
@@ -702,6 +726,7 @@
     createReferencePlannerData,
     restoreMissingMondayReferenceTasks,
     createRecurringTasks,
+    processOverdueTasks,
     rollOverOverdueTasks,
     removeFutureRecurringTasks,
     sortTasks,
@@ -810,14 +835,16 @@
       return;
     }
     observedTodayKey = todayKey;
-    const movedOverdueTasks = rollOverOverdueTasks(plannerData.tasks, dateForToday());
+    const overdueResult = processOverdueTasks(plannerData.tasks, dateForToday());
     selectedWeekStart = getWeekStart(dateForToday());
-    if (movedOverdueTasks > 0 && !persist()) {
+    if ((overdueResult.marked > 0 || overdueResult.moved > 0) && !persist()) {
       return;
     }
     renderPlanner();
-    if (movedOverdueTasks > 0) {
-      showToast("Перенесено просроченных задач: " + movedOverdueTasks + ".");
+    if (overdueResult.moved > 0) {
+      showToast("Перенесено на новую неделю просроченных задач: " + overdueResult.moved + ".");
+    } else if (overdueResult.marked > 0) {
+      showToast("Отмечено просроченных задач: " + overdueResult.marked + ".");
     }
   }
 
@@ -904,7 +931,7 @@
 
         const previousData = plannerData;
         plannerData = importedPlannerData;
-        const movedOverdueTasks = rollOverOverdueTasks(plannerData.tasks, dateForToday());
+        const overdueResult = processOverdueTasks(plannerData.tasks, dateForToday());
         if (!persist()) {
           plannerData = previousData;
           importedPlannerData = null;
@@ -919,9 +946,11 @@
         closeDialog(confirmDialog);
         renderPlanner();
         showToast(
-          movedOverdueTasks > 0
-            ? "Импорт завершён. Перенесено просроченных задач: " + movedOverdueTasks + "."
-            : "Импорт завершён."
+          overdueResult.moved > 0
+            ? "Импорт завершён. Перенесено на новую неделю просроченных задач: " + overdueResult.moved + "."
+            : overdueResult.marked > 0
+              ? "Импорт завершён. Отмечено просроченных задач: " + overdueResult.marked + "."
+              : "Импорт завершён."
         );
       },
       "Импортировать"
@@ -1961,8 +1990,12 @@
       return;
     }
     const referenceRecovery = restoreMissingMondayReferenceTasks(plannerData, dateForToday());
-    const movedOverdueTasks = rollOverOverdueTasks(plannerData.tasks, dateForToday());
-    if (referenceRecovery.changed || movedOverdueTasks > 0) {
+    const overdueResult = processOverdueTasks(plannerData.tasks, dateForToday());
+    if (
+      referenceRecovery.changed ||
+      overdueResult.marked > 0 ||
+      overdueResult.moved > 0
+    ) {
       persist();
     }
     observedTodayKey = getTodayKey();
@@ -1970,10 +2003,12 @@
     applyTheme();
     initializeEventHandlers();
     renderPlanner();
-    if (movedOverdueTasks > 0) {
+    if (overdueResult.moved > 0) {
       showToast(
-        "Перенесено просроченных задач: " + movedOverdueTasks + "."
+        "Перенесено на новую неделю просроченных задач: " + overdueResult.moved + "."
       );
+    } else if (overdueResult.marked > 0) {
+      showToast("Отмечено просроченных задач: " + overdueResult.marked + ".");
     }
   }
 
